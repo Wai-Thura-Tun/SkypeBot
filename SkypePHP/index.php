@@ -13,6 +13,8 @@ $recepientId = $envAssoc["SKYPE_RECIPIENT_ID"];
 $senderId = $envAssoc["SKYPE_SENDER_ID"];
 $accessToken = "";
 $roomers = [];
+$imageTypes = ["jpg", "jpeg", "png", "gif"];
+$fileTypes = ["pdf", "xlsx", "php"];
 
 getRoomers($roomId);
 
@@ -25,21 +27,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $data = json_decode($rowData, true);
     $sender = $data['webhook_event']['account_id'];
     $text = explode("\n",$data["webhook_event"]["body"])[0];
+    $content = str_contains($text,"[info]") ? "" : $text;
     $senderInfo = array_filter($roomers, function ($roomer) use ($sender) {
       return $roomer["id"] == $sender;
     });
 
+    $pf = fopen("sample.txt", "w");
+    fwrite($pf,$data["webhook_event"]["body"]);
+    fclose($pf);
+
     $accessMatch = [];
     $attachmentURL = "";
+    $getType = "";
     preg_match('/\[download:(\d+)\](.+?)(?=\s+\(\d+(?:\.\d+)? (?:B|KB|MB|GB|TB)\)\[\/download\])/', $rowData, $accessMatch);
     if (!empty($accessMatch)) {
       $attachmentURL = getFileURL($accessMatch[1]);
-    } 
-    $getType = explode(".",$accessMatch[2])[1];
-    $content = $text ? ": " . $text : "";
-    $message = reset($senderInfo)["name"] . $content;
+      $getType = strtolower(explode(".",$accessMatch[2])[1]);
+    }
+    $message = reset($senderInfo)["name"]." : ".$content;
     $accessToken = getSkypeToken();
-    sendMessage($message, $senderId, $recepientId, $accessToken, $skypeURL,$accessMatch[2], $attachmentURL, $getType);
+    sendMessage($message, $senderId, $recepientId, $accessToken, $skypeURL, $attachmentURL, $getType);
 
   } else if (str_contains($incomingURI, "/skype")) {
     $rowData = file_get_contents('php://input');
@@ -89,8 +96,9 @@ function getSkypeToken()
   return $response["access_token"];
 }
 
-function sendMessage($message, $senderId, $recepientId, $accessToken, $skypeURL, $file_name, $file_url, $file_type)
+function sendMessage($message, $senderId, $recepientId, $accessToken, $skypeURL, $file_url, $file_type)
 {
+  global $imageTypes;
   $skypeMessgaeURL = $skypeURL . "/conversations/" . $senderId . "/activities";
   $headers = array(
     'Authorization: Bearer ' . $accessToken,
@@ -114,12 +122,23 @@ function sendMessage($message, $senderId, $recepientId, $accessToken, $skypeURL,
     )
   );
 
-  if($file_name && $file_url && $file_type) {
-    $attachmentPayload = array(
-      'contentType' => "image/".$file_type,
-      'contentUrl' => $file_url,
-      'name' => ""
-    );
+  if($file_url && $file_type ) {
+    $attachmentPayload = [];
+
+    if(in_array($file_type,$imageTypes)) {
+      $attachmentPayload = array(
+        'contentType' => "image/".$file_type,
+        'contentUrl' => $file_url,
+        'name' => ""
+      );
+    }
+    else {
+      $attachmentPayload = array(
+        "contentType" => "application/pdf",
+        "contentUrl" => $file_url,
+        "name" => "hgopreg.pdf",
+      );
+    }
     $messagePayload["attachments"] = array($attachmentPayload);
   }
 
