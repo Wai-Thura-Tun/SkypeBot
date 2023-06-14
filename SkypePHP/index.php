@@ -14,7 +14,6 @@ $senderId = $envAssoc["SKYPE_SENDER_ID"];
 $accessToken = "";
 $roomers = [];
 $imageTypes = ["jpg", "jpeg", "png", "gif"];
-$fileTypes = ["pdf", "xlsx", "php"];
 
 getRoomers($roomId);
 
@@ -26,27 +25,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $rowData = file_get_contents('php://input');
     $data = json_decode($rowData, true);
     $sender = $data['webhook_event']['account_id'];
-    $text = explode("\n",$data["webhook_event"]["body"])[0];
-    $content = str_contains($text,"[info]") ? "" : $text;
+    $rawContent = $data['webhook_event']['body'];
+    $removeContentPos = strpos($rawContent, "[info][title]");
+    $imagePos = strpos($rawContent,'title][preview');
+    $text = $removeContentPos > 0 ? substr($rawContent, 0, $removeContentPos) : ($removeContentPos == 0 ? "" : $rawContent);
+
     $senderInfo = array_filter($roomers, function ($roomer) use ($sender) {
       return $roomer["id"] == $sender;
     });
 
-    $pf = fopen("sample.txt", "w");
-    fwrite($pf,$data["webhook_event"]["body"]);
-    fclose($pf);
-
+    $finalContent = preg_replace('/(\[To:)\d+/','$1',$text);
     $accessMatch = [];
-    $attachmentURL = "";
+    $fileInfo = [];
     $getType = "";
-    preg_match('/\[download:(\d+)\](.+?)(?=\s+\(\d+(?:\.\d+)? (?:B|KB|MB|GB|TB)\)\[\/download\])/', $rowData, $accessMatch);
+
+    preg_match('/download:(\d+)/', $rawContent, $accessMatch);
     if (!empty($accessMatch)) {
-      $attachmentURL = getFileURL($accessMatch[1]);
-      $getType = strtolower(explode(".",$accessMatch[2])[1]);
+      $fileInfo = getFileURL($accessMatch[1]);
+      $getType = $fileInfo["extension"];
     }
-    $message = reset($senderInfo)["name"]." : ".$content;
+    $sender = reset($senderInfo)["name"];
+    $status = "";
     $accessToken = getSkypeToken();
-    sendMessage($message, $senderId, $recepientId, $accessToken, $skypeURL, $attachmentURL, $getType);
+
+    // Decide message statement 
+    if($imagePos && $getType != "gif") {
+      $status = $status . " sent an image";
+    }
+    else if (!$imagePos && $getType && $getType != "gif") {
+      $status = $status . " uploads a file";
+    }
+    else if($getType == "gif"){
+      $status = $status . " sent a GIF";
+    }
+    else {
+      $status = $status . " sent a message";
+    }
+    $message = $status."\n".$finalContent;
+    sendMessage($message, $sender, $senderId, $recepientId, $accessToken, $skypeURL, $fileInfo);
 
   } else if (str_contains($incomingURI, "/skype")) {
     $rowData = file_get_contents('php://input');
@@ -96,7 +112,7 @@ function getSkypeToken()
   return $response["access_token"];
 }
 
-function sendMessage($message, $senderId, $recepientId, $accessToken, $skypeURL, $file_url, $file_type)
+function sendMessage($message, $sender, $senderId, $recepientId, $accessToken, $skypeURL, $fileInfo)
 {
   global $imageTypes;
   $skypeMessgaeURL = $skypeURL . "/conversations/" . $senderId . "/activities";
@@ -105,9 +121,10 @@ function sendMessage($message, $senderId, $recepientId, $accessToken, $skypeURL,
     'Content-Type: application/json'
   );
 
+  $messageContent = "**$sender**".$message;
   $messagePayload = array(
     "type" => "message",
-    "text" => $message,
+    "text" => $messageContent,
     "from" => array(
       "id" => $senderId,
       "name" => "ThuraBot"
@@ -122,24 +139,20 @@ function sendMessage($message, $senderId, $recepientId, $accessToken, $skypeURL,
     )
   );
 
-  if($file_url && $file_type ) {
+  if($fileInfo["url"] && $fileInfo["extension"] ) {
     $attachmentPayload = [];
 
-    if(in_array($file_type,$imageTypes)) {
+    if(in_array($fileInfo["extension"],$imageTypes)) {
       $attachmentPayload = array(
-        'contentType' => "image/".$file_type,
-        'contentUrl' => $file_url,
+        'contentType' => "image/".$fileInfo["extension"],
+        'contentUrl' => $fileInfo["url"],
         'name' => ""
       );
+      $messagePayload["attachments"] = array($attachmentPayload);
     }
     else {
-      $attachmentPayload = array(
-        "contentType" => "application/pdf",
-        "contentUrl" => $file_url,
-        "name" => "hgopreg.pdf",
-      );
+      $messagePayload["text"] = $messageContent."\n **Here is the link to download the file** [Click Here](".$fileInfo["url"].") \n(Notice the link is only available for 30 seconds. Sorry for inconvenience) \n";
     }
-    $messagePayload["attachments"] = array($attachmentPayload);
   }
 
   $ch = curl_init();
@@ -152,7 +165,7 @@ function sendMessage($message, $senderId, $recepientId, $accessToken, $skypeURL,
   curl_close($ch);
 }
 
-function getFileURL($file_id): String {
+function getFileURL($file_id): Array {
   global $chatApiToken;
   global $chatworkURL;
   global $roomId;
@@ -164,10 +177,10 @@ function getFileURL($file_id): String {
   $rawResponse = curl_exec($ch);
   curl_close($ch);
   $data = json_decode($rawResponse, true);
-  return $data["download_url"];
-  //$rawFileData = file_get_contents($data["download_url"], true);
-  //$filePath = "img/".$file_name;
-  //if($rawFileData != false && !file_exists($filePath)) {
-  //  file_put_contents($filePath,$rawFileData);
-  //}
+  return [
+    "url" => $data["download_url"],
+    "name" => $data["filename"],
+    "extension" => pathinfo($data["filename"],PATHINFO_EXTENSION),
+    "size" => $data["filesize"]
+  ];
 }
